@@ -51,7 +51,12 @@ class NavigationManager:
         full_url = URLBuilder.build_match_url_with_market(page.url, url_suffix)
         self.logger.info("Navigating via URL-suffix to %s: %s", market_tab_name, full_url)
         try:
-            await page.goto(full_url, wait_until="networkidle", timeout=NAVIGATION_TIMEOUT_MS)
+            # page.goto on a URL that differs only in the hash does not trigger a full reload,
+            # so OddsPortal's SPA often keeps rendering the previous market's DOM. Forcing a
+            # reload after the hash is set guarantees the SPA re-initialises with the new
+            # market selected from scratch.
+            await page.goto(full_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            await page.reload(wait_until="networkidle", timeout=NAVIGATION_TIMEOUT_MS)
             await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
             return True
         except Exception as e:
