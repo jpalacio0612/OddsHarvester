@@ -328,7 +328,7 @@ def test_get_league_url_invalid_league():
     ("main_market", "specific_market", "expected_suffix"),
     [
         ("1X2", None, "1X2;2"),
-        ("Both Teams to Score", None, "BTTS;2"),
+        ("Both Teams to Score", None, "bts;2"),
         ("Over/Under", "Over/Under +2.5", "Over/Under;2;2.5;0"),
     ],
 )

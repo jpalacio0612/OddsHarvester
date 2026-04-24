@@ -13,7 +13,10 @@ from oddsharvester.utils.sport_market_constants import Sport
 # extend when another market proves click-nav unreliable.
 _MARKET_URL_SUFFIX_MAPPING: dict[tuple[str, str | None], str] = {
     ("1X2", None): "1X2;2",
-    ("Both Teams to Score", None): "BTTS;2",
+    # OddsPortal's SPA uses a lowercase ``bts`` slug for Both Teams to Score — capturing the URL
+    # after clicking the tab shows ``#<hash>:bts;2`` even on pages where the upper-case ``BTTS``
+    # label is rendered. Using the upper-case form here silently falls back to the 1X2 tab.
+    ("Both Teams to Score", None): "bts;2",
     ("Over/Under", "Over/Under +2.5"): "Over/Under;2;2.5;0",
 }
 
