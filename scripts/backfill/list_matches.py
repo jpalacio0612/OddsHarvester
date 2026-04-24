@@ -183,7 +183,29 @@ async def _paginate(page: Page) -> list[str]:
     return all_urls
 
 
-async def run(sport: str, league: str, season: str, out: Path | None) -> int:
+def _upload_to_s3(bucket: str, prefix: str, sport: str, league: str, season: str, content: str) -> str:
+    """Upload the match list to S3 under ``_bootstrap/oddsportal/<sport>/<league>/<season>/matches.txt``.
+
+    The bootstrap prefix is kept separate from the per-match JSONs so it does not get
+    picked up by ``list_existing_hashes`` in the orchestrator. Returns the full S3 URI.
+    """
+    import boto3
+
+    cleaned_prefix = prefix.strip("/")
+    key = f"{cleaned_prefix}/{sport}/{league}/{season}/matches.txt"
+    s3 = boto3.client("s3")
+    s3.put_object(Bucket=bucket, Key=key, Body=content.encode("utf-8"), ContentType="text/plain")
+    return f"s3://{bucket}/{key}"
+
+
+async def run(
+    sport: str,
+    league: str,
+    season: str,
+    out: Path | None,
+    s3_bucket: str | None,
+    s3_prefix: str,
+) -> int:
     base_url = URLBuilder.get_historic_matches_url(sport=sport, league=league, season=season)
     logger.info("base results URL: %s", base_url)
     started = time.time()
@@ -212,13 +234,20 @@ async def run(sport: str, league: str, season: str, out: Path | None) -> int:
         logger.error("no match URLs found — check league/season parameters")
         return 0
 
+    payload = "\n".join(urls) + "\n"
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("\n".join(urls) + "\n")
+        out.write_text(payload)
         logger.info("wrote %d URLs to %s", len(urls), out)
     else:
-        for url in urls:
-            sys.stdout.write(url + "\n")
+        sys.stdout.write(payload)
+
+    if s3_bucket:
+        try:
+            s3_uri = _upload_to_s3(s3_bucket, s3_prefix, sport, league, season, payload)
+            logger.info("mirrored match list to %s", s3_uri)
+        except Exception as err:  # pragma: no cover - best-effort durability
+            logger.error("S3 upload failed: %s", err)
 
     logger.info("done in %.1fs (%d URLs)", time.time() - started, len(urls))
     return len(urls)
@@ -230,6 +259,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("-l", "--league", required=True, help="league slug (e.g. england-premier-league)")
     parser.add_argument("--season", required=True, help="'YYYY-YYYY' or 'YYYY'")
     parser.add_argument("--out", type=Path, default=None, help="write URLs to this file instead of stdout")
+    parser.add_argument(
+        "--s3-bucket",
+        default=None,
+        help="also upload the match list to s3://<bucket>/<s3-prefix>/<sport>/<league>/<season>/matches.txt",
+    )
+    parser.add_argument(
+        "--s3-prefix",
+        default="_bootstrap/oddsportal",
+        help="prefix under --s3-bucket (default: _bootstrap/oddsportal)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -240,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s %(message)s",
     )
-    count = asyncio.run(run(args.sport, args.league, args.season, args.out))
+    count = asyncio.run(run(args.sport, args.league, args.season, args.out, args.s3_bucket, args.s3_prefix))
     return 0 if count > 0 else 1
 
 
