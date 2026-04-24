@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from oddsharvester.core.browser_helper import BrowserHelper
+from oddsharvester.utils.constants import COOKIE_BANNER_TIMEOUT_MS
 
 
 class TestBrowserHelper:
@@ -45,7 +46,7 @@ class TestBrowserHelper:
 
         result = await browser_helper.dismiss_cookie_banner(mock_page, selector=custom_selector)
         assert result is True
-        mock_page.wait_for_selector.assert_called_with(custom_selector, timeout=10000)
+        mock_page.wait_for_selector.assert_called_with(custom_selector, timeout=COOKIE_BANNER_TIMEOUT_MS)
 
     @pytest.mark.asyncio
     async def test_dismiss_cookie_banner_timeout_error(self, browser_helper, mock_page):
