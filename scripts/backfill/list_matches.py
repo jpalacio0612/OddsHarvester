@@ -41,7 +41,7 @@ UA_HEADERS = {"User-Agent": "curl/7.88.1"}
 
 MAX_PAGES = 30  # safety cap; EPL season is ~8 pages, other leagues up to ~12
 POST_GOTO_WAIT_MS = 3000
-BETWEEN_PAGE_WAIT_MS = 2500
+BETWEEN_PAGE_WAIT_MS = 4500
 
 logger = logging.getLogger("backfill.list_matches")
 
@@ -138,6 +138,16 @@ async def _paginate(page: Page) -> list[str]:
                 new_count += 1
         logger.info("page %d (iter %d): +%d new match URLs (%d visible on page, %d cumulative)", page_num, iteration, new_count, len(urls), len(all_urls))
 
+        # Snapshot first row text so we can detect a real DOM swap after the click.
+        prev_first_row = await page.evaluate(
+            """
+            () => {
+                const r = document.querySelector("[class^='eventRow']");
+                return r ? (r.innerText || '').substring(0, 200) : null;
+            }
+            """
+        )
+
         if not await _click_next(page):
             break
 
@@ -152,6 +162,23 @@ async def _paginate(page: Page) -> list[str]:
         except PlaywrightTimeoutError:
             logger.warning("URL did not advance after Next click at page %d — stopping", page_num)
             break
+
+        # OddsPortal swaps the DOM *after* the URL changes; poll up to 12s for the
+        # first event row's text to differ from the pre-click snapshot.
+        for _ in range(12):
+            await page.wait_for_timeout(1000)
+            current_first_row = await page.evaluate(
+                """
+                () => {
+                    const r = document.querySelector("[class^='eventRow']");
+                    return r ? (r.innerText || '').substring(0, 200) : null;
+                }
+                """
+            )
+            if current_first_row and current_first_row != prev_first_row:
+                break
+        else:
+            logger.warning("DOM did not refresh within 12s after URL advance at page %d", page_num)
 
     return all_urls
 
