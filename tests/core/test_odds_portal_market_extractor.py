@@ -233,11 +233,23 @@ class TestOddsPortalMarketExtractor:
 
     @pytest.mark.asyncio
     async def test_extract_market_odds_with_specific_market(self, extractor, page_mock, browser_helper_mock):
-        """(Over/Under, Over/Under +2.5) is URL-suffix mapped — sub-market click is skipped."""
+        """(Over/Under, Over/Under +2.5) boots on :1X2;2 then clicks the tab — sub-market click is skipped."""
         # Arrange
         page_mock.url = "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK"
         page_mock.goto = AsyncMock()
+        page_mock.reload = AsyncMock()
         page_mock.wait_for_selector = AsyncMock()
+        page_mock.wait_for_url = AsyncMock()
+        page_mock.wait_for_timeout = AsyncMock()
+
+        tab_mock = AsyncMock()
+        tab_mock.count = AsyncMock(return_value=1)
+        tab_mock.nth = MagicMock(return_value=tab_mock)
+        tab_mock.is_visible = AsyncMock(return_value=True)
+        tab_mock.scroll_into_view_if_needed = AsyncMock()
+        tab_mock.click = AsyncMock()
+        page_mock.get_by_text = MagicMock(return_value=tab_mock)
+
         extractor.odds_parser.parse_market_odds = MagicMock(
             return_value=[
                 {"bookmaker_name": "Bookmaker1", "odds_over": "1.90", "odds_under": "1.90", "period": "FullTime"}
@@ -258,9 +270,9 @@ class TestOddsPortalMarketExtractor:
         )
 
         # Assert
-        page_mock.goto.assert_called_once()
-        assert page_mock.goto.call_args.args[0].endswith(":Over/Under;2;2.5;0")
-        # Sub-market click is skipped because the URL hash already selected +2.5
+        assert page_mock.goto.call_args.args[0].endswith(":1X2;2")
+        tab_mock.click.assert_called_once()
+        # The old OddsPortal-style sub-market click is skipped because URL-suffix nav handles the line
         browser_helper_mock.scroll_until_visible_and_click_parent.assert_not_called()
         assert len(result) == 1
         assert result[0]["bookmaker_name"] == "Bookmaker1"

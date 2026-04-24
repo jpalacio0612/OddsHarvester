@@ -7,11 +7,17 @@ from oddsharvester.core.odds_portal_selectors import OddsPortalSelectors
 from oddsharvester.core.url_builder import URLBuilder
 from oddsharvester.utils.constants import (
     DEFAULT_MARKET_TIMEOUT_MS,
+    DYNAMIC_CONTENT_WAIT_MS,
     MARKET_SWITCH_WAIT_TIME_MS,
     NAVIGATION_TIMEOUT_MS,
     SCROLL_PAUSE_TIME_MS,
     SELECTOR_TIMEOUT_MS,
 )
+
+# OddsPortal's SPA only boots cleanly with the ``1X2;2`` hash suffix — visiting a non-default
+# suffix like ``bts;2`` directly leaves the bookmaker table empty. To render a non-default
+# market we first boot on 1X2 and then trigger an in-page tab switch.
+_BOOT_SUFFIX = "1X2;2"
 
 
 class NavigationManager:
@@ -48,15 +54,43 @@ class NavigationManager:
                 page=page, market_tab_name=market_tab_name, timeout=DEFAULT_MARKET_TIMEOUT_MS
             )
 
-        full_url = URLBuilder.build_match_url_with_market(page.url, url_suffix)
-        self.logger.info("Navigating via URL-suffix to %s: %s", market_tab_name, full_url)
+        self.logger.info("Navigating via URL-suffix to %s (suffix=%s)", market_tab_name, url_suffix)
         try:
-            # page.goto on a URL that differs only in the hash does not trigger a full reload,
-            # so OddsPortal's SPA often keeps rendering the previous market's DOM. Forcing a
-            # reload after the hash is set guarantees the SPA re-initialises with the new
-            # market selected from scratch.
-            await page.goto(full_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            # Always boot on the 1X2 suffix — OddsPortal's SPA does not initialise the bookmaker
+            # table for non-default suffixes on a cold load. The reload after the goto guarantees
+            # a clean SPA boot (a plain goto keeps the previous market's DOM when only the hash
+            # changed).
+            boot_url = URLBuilder.build_match_url_with_market(page.url, _BOOT_SUFFIX)
+            await page.goto(boot_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
             await page.reload(wait_until="networkidle", timeout=NAVIGATION_TIMEOUT_MS)
+            await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
+
+            # For 1X2 the SPA has already rendered the desired tab; nothing else to do.
+            if url_suffix == _BOOT_SUFFIX:
+                return True
+
+            # For non-default tabs, click the visible market label in the match page.
+            # ``get_by_text`` typically returns two matches for the same text (one hidden
+            # duplicate + one visible); we pick the visible one.
+            tab_locator = page.get_by_text(market_tab_name, exact=True)
+            tab_count = await tab_locator.count()
+            clicked = False
+            for i in range(tab_count):
+                candidate = tab_locator.nth(i)
+                if not await candidate.is_visible():
+                    continue
+                await candidate.scroll_into_view_if_needed(timeout=SELECTOR_TIMEOUT_MS)
+                await candidate.click(timeout=SELECTOR_TIMEOUT_MS)
+                clicked = True
+                break
+            if not clicked:
+                self.logger.error("No visible tab with text %r on match page", market_tab_name)
+                return False
+
+            # Wait for the SPA to update the URL and re-render the bookmaker rows with the new
+            # market's odds.
+            await page.wait_for_url(lambda u, _suffix=url_suffix: _suffix in u, timeout=NAVIGATION_TIMEOUT_MS)
+            await page.wait_for_timeout(DYNAMIC_CONTENT_WAIT_MS)
             await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
             return True
         except Exception as e:

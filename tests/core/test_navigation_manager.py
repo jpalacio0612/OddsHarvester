@@ -29,10 +29,11 @@ class TestNavigationManager:
 
     @pytest.mark.asyncio
     async def test_navigate_to_market_tab_url_suffix_path(self, navigation_manager, page_mock, browser_helper_mock):
-        """Registered markets (e.g., 1X2) navigate via URL hash — no click-based fallback is used."""
+        """1X2 is the boot tab: goto + reload is enough — no further click is performed."""
         # Arrange
         page_mock.url = "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK"
         page_mock.goto = AsyncMock()
+        page_mock.reload = AsyncMock()
         page_mock.wait_for_selector = AsyncMock()
 
         # Act
@@ -41,9 +42,42 @@ class TestNavigationManager:
         # Assert
         assert result is True
         page_mock.goto.assert_called_once()
-        # URL includes the 1X2 hash-suffix
         assert page_mock.goto.call_args.args[0].endswith(":1X2;2")
+        page_mock.reload.assert_called_once()
         # Fallback to click-based helper is never invoked for URL-suffix markets
+        browser_helper_mock.navigate_to_market_tab.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_market_tab_non_default_clicks_tab(
+        self, navigation_manager, page_mock, browser_helper_mock
+    ):
+        """Non-default mapped markets (e.g. BTTS) boot on :1X2;2 then click the tab by text."""
+        # Arrange
+        page_mock.url = "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK"
+        page_mock.goto = AsyncMock()
+        page_mock.reload = AsyncMock()
+        page_mock.wait_for_selector = AsyncMock()
+        page_mock.wait_for_url = AsyncMock()
+        page_mock.wait_for_timeout = AsyncMock()
+
+        tab_mock = AsyncMock()
+        tab_mock.count = AsyncMock(return_value=1)
+        tab_mock.nth = MagicMock(return_value=tab_mock)
+        tab_mock.is_visible = AsyncMock(return_value=True)
+        tab_mock.scroll_into_view_if_needed = AsyncMock()
+        tab_mock.click = AsyncMock()
+        page_mock.get_by_text = MagicMock(return_value=tab_mock)
+
+        # Act
+        result = await navigation_manager.navigate_to_market_tab(page_mock, "Both Teams to Score")
+
+        # Assert
+        assert result is True
+        # Boot goto lands on the :1X2;2 hash
+        assert page_mock.goto.call_args.args[0].endswith(":1X2;2")
+        # Tab was clicked by its visible text
+        page_mock.get_by_text.assert_called_with("Both Teams to Score", exact=True)
+        tab_mock.click.assert_called_once()
         browser_helper_mock.navigate_to_market_tab.assert_not_called()
 
     @pytest.mark.asyncio
