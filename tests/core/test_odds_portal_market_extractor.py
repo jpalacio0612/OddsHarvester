@@ -7,7 +7,6 @@ from oddsharvester.core.browser_helper import BrowserHelper
 from oddsharvester.core.odds_portal_market_extractor import OddsPortalMarketExtractor
 from oddsharvester.core.sport_market_registry import SportMarketRegistry
 from oddsharvester.core.sport_period_registry import SportPeriodRegistry
-from oddsharvester.utils.constants import DEFAULT_MARKET_TIMEOUT_MS
 
 # Sample HTML for testing
 SAMPLE_HTML_ODDS = """
