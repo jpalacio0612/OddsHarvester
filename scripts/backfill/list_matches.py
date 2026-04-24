@@ -5,6 +5,13 @@ This is a lightweight one-off per season; its output feeds
 ``scripts/backfill/orchestrator.py``. Keeping it out of the main scraper flow
 avoids paying the full Playwright boot every time we want the season's URL list.
 
+OddsPortal paginates the results via an SPA control: clicking
+``a.pagination-link`` with text "Next" triggers an XHR
+(``/ajax-sport-country-tournament-archive_/...``) that replaces the visible
+event rows and updates the URL fragment to ``#/page/N/``. There is no numeric
+paginator anchor — only "Next". We drive the pagination by clicking Next until
+either the button disappears or the URL fragment stops advancing.
+
 Usage
 -----
     uv run python -m scripts.backfill.list_matches \
@@ -22,20 +29,26 @@ import sys
 import time
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from oddsharvester.core.url_builder import URLBuilder
 from oddsharvester.utils.constants import ODDSPORTAL_BASE_URL
 
-SCROLL_STEPS = 12
-SCROLL_WAIT_MS = 1200
-EXTRA_SETTLE_MS = 4000
-POST_GOTO_WAIT_MS = 4000
+# OddsPortal's edge returns 503 to any browser-class User-Agent from AWS IPs;
+# curl-style UA passes through while navigator.userAgent stays HeadlessChrome
+# (so the SPA renders for us).
+UA_HEADERS = {"User-Agent": "curl/7.88.1"}
+
+MAX_PAGES = 30  # safety cap; EPL season is ~8 pages, other leagues up to ~12
+POST_GOTO_WAIT_MS = 3000
+BETWEEN_PAGE_WAIT_MS = 2500
 
 logger = logging.getLogger("backfill.list_matches")
 
+_PAGE_HASH_RE = re.compile(r"#/page/(\d+)/")
 
-async def _accept_cookies(page) -> None:
+
+async def _accept_cookies(page: Page) -> None:
     try:
         btn = page.locator("#onetrust-accept-btn-handler")
         if await btn.count() > 0 and await btn.first.is_visible():
@@ -45,26 +58,23 @@ async def _accept_cookies(page) -> None:
         logger.debug("cookie-accept skipped: %s", err)
 
 
-async def _scroll_to_load_rows(page) -> None:
-    """Lazy-load rows by incremental scrolling until no new content appears."""
-    for i in range(SCROLL_STEPS):
-        await page.mouse.wheel(0, 2000)
-        await page.wait_for_timeout(SCROLL_WAIT_MS)
-        if i % 2 == 1:
-            row_count = await page.locator("[class*='eventRow']").count()
-            logger.debug("scroll step %d: %d eventRows", i + 1, row_count)
-    await page.wait_for_timeout(EXTRA_SETTLE_MS)
+async def _collect_match_urls(page: Page) -> list[str]:
+    """Extract deduplicated /h2h/ links whose row class *starts* with ``eventRow``.
 
-
-async def _collect_match_urls(page) -> list[str]:
-    """Extract deduplicated /h2h/ links from the results page."""
+    A looser ``[class*='eventRow']`` also matches sidebar widgets (``nextEventRow``,
+    ``upcomingEventRow``) which have been observed to contaminate the listing with
+    cross-league matches.
+    """
     hrefs: list[str] = await page.evaluate(
         """
         () => {
-            const rows = Array.from(document.querySelectorAll("[class*='eventRow']"));
+            const rows = Array.from(document.querySelectorAll("[class]")).filter(el => {
+                const cls = (el.getAttribute('class') || '').split(/\\s+/);
+                return cls.some(c => c.startsWith('eventRow'));
+            });
             const urls = new Set();
             rows.forEach(row => {
-                row.querySelectorAll("a[href*='/h2h/']").forEach(a => {
+                row.querySelectorAll("a[href*='/football/h2h/']").forEach(a => {
                     const href = a.getAttribute("href");
                     if (href) urls.add(href);
                 });
@@ -82,55 +92,68 @@ async def _collect_match_urls(page) -> list[str]:
     return absolute
 
 
-async def _paginate(page, base_url: str) -> list[str]:
-    """Walk every numbered results page and aggregate match URLs.
+async def _current_page_number(page: Page) -> int:
+    match = _PAGE_HASH_RE.search(page.url)
+    return int(match.group(1)) if match else 1
 
-    OddsPortal's ``/results/`` paginator exposes numeric ``a.pagination-link``
-    anchors; we iterate the distinct page numbers in ascending order and append
-    each page's match URLs. The first page is the base URL (``#/page/1/``).
+
+async def _click_next(page: Page) -> bool:
+    """Click the paginator "Next" anchor; return True on success.
+
+    The anchor sits well below the fold; scroll-into-view is required before the
+    click will register.
     """
-    await _scroll_to_load_rows(page)
-    first_page = await _collect_match_urls(page)
-    logger.info("page 1: %d matches", len(first_page))
+    next_locator = page.locator("a.pagination-link", has_text="Next")
+    count = await next_locator.count()
+    if count == 0:
+        logger.debug("no a.pagination-link[Next] present — end of pagination")
+        return False
+    first = next_locator.first
+    try:
+        await first.scroll_into_view_if_needed(timeout=5000)
+        await first.click(timeout=5000)
+        return True
+    except PlaywrightTimeoutError as err:
+        logger.warning("Next click timed out: %s", err)
+        return False
 
-    # Find all numeric pagination links
-    pagination_numbers = await page.evaluate(
-        """
-        () => {
-            const links = Array.from(document.querySelectorAll("a.pagination-link"));
-            const nums = new Set();
-            links.forEach(a => {
-                const txt = (a.innerText || "").trim();
-                if (/^\\d+$/.test(txt)) nums.add(parseInt(txt, 10));
-            });
-            return Array.from(nums).sort((a, b) => a - b);
-        }
-        """
-    )
-    logger.info("pagination pages discovered: %s", pagination_numbers)
 
-    all_urls = list(first_page)
-    for page_num in pagination_numbers:
-        if page_num <= 1:
-            continue
-        page_url = f"{base_url}#/page/{page_num}/"
-        logger.info("navigating to page %d: %s", page_num, page_url)
-        await page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(3000)
-        await _scroll_to_load_rows(page)
-        page_urls = await _collect_match_urls(page)
-        logger.info("page %d: %d matches", page_num, len(page_urls))
-        all_urls.extend(page_urls)
+async def _paginate(page: Page) -> list[str]:
+    """Click Next repeatedly and aggregate event-row URLs from each page.
 
-    # Dedupe preserving first-seen order
+    Returns the deduplicated (first-seen order) list of match URLs.
+    """
+    all_urls: list[str] = []
     seen: set[str] = set()
-    deduped: list[str] = []
-    for url in all_urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        deduped.append(url)
-    return deduped
+
+    for iteration in range(1, MAX_PAGES + 1):
+        page_num = await _current_page_number(page)
+        await page.wait_for_timeout(BETWEEN_PAGE_WAIT_MS)
+        urls = await _collect_match_urls(page)
+        new_count = 0
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                all_urls.append(url)
+                new_count += 1
+        logger.info("page %d (iter %d): +%d new match URLs (%d visible on page, %d cumulative)", page_num, iteration, new_count, len(urls), len(all_urls))
+
+        if not await _click_next(page):
+            break
+
+        # Wait for the URL fragment to advance OR for rows to change.
+        try:
+            await page.wait_for_url(
+                lambda u, _prev=page_num: (
+                    bool(_PAGE_HASH_RE.search(u)) and int(_PAGE_HASH_RE.search(u).group(1)) > _prev
+                ),
+                timeout=15000,
+            )
+        except PlaywrightTimeoutError:
+            logger.warning("URL did not advance after Next click at page %d — stopping", page_num)
+            break
+
+    return all_urls
 
 
 async def run(sport: str, league: str, season: str, out: Path | None) -> int:
@@ -140,15 +163,21 @@ async def run(sport: str, league: str, season: str, out: Path | None) -> int:
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(viewport={"width": 1600, "height": 1100})
+        context = await browser.new_context(
+            viewport={"width": 1600, "height": 1100},
+            extra_http_headers=UA_HEADERS,
+        )
         page = await context.new_page()
         try:
             await page.goto(base_url, wait_until="networkidle", timeout=60000)
             await _accept_cookies(page)
             await page.wait_for_timeout(POST_GOTO_WAIT_MS)
-            logger.info("initial html bytes=%d", len(await page.content()))
-            logger.info("eventRow count pre-scroll=%d", await page.locator("[class*='eventRow']").count())
-            urls = await _paginate(page, base_url)
+            logger.info(
+                "initial html=%dB eventRows=%d",
+                len(await page.content()),
+                await page.locator("[class^='eventRow']").count(),
+            )
+            urls = await _paginate(page)
         finally:
             await browser.close()
 
