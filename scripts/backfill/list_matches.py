@@ -27,9 +27,10 @@ from playwright.async_api import async_playwright
 from oddsharvester.core.url_builder import URLBuilder
 from oddsharvester.utils.constants import ODDSPORTAL_BASE_URL
 
-SCROLL_STEPS = 8
-SCROLL_WAIT_MS = 1000
-EXTRA_SETTLE_MS = 2000
+SCROLL_STEPS = 12
+SCROLL_WAIT_MS = 1200
+EXTRA_SETTLE_MS = 4000
+POST_GOTO_WAIT_MS = 4000
 
 logger = logging.getLogger("backfill.list_matches")
 
@@ -142,8 +143,11 @@ async def run(sport: str, league: str, season: str, out: Path | None) -> int:
         context = await browser.new_context(viewport={"width": 1600, "height": 1100})
         page = await context.new_page()
         try:
-            await page.goto(base_url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(base_url, wait_until="networkidle", timeout=60000)
             await _accept_cookies(page)
+            await page.wait_for_timeout(POST_GOTO_WAIT_MS)
+            logger.info("initial html bytes=%d", len(await page.content()))
+            logger.info("eventRow count pre-scroll=%d", await page.locator("[class*='eventRow']").count())
             urls = await _paginate(page, base_url)
         finally:
             await browser.close()
