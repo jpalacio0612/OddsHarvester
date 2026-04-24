@@ -68,7 +68,9 @@ class NavigationManager:
             # A fresh match page can re-show the consent banner after reload; dismissing it before
             # waiting for rows avoids the banner masking click targets / slowing lazy-load.
             await self.browser_helper.dismiss_cookie_banner(page=page)
-            await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
+            await page.wait_for_selector(
+                OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS, state="attached"
+            )
 
             # For 1X2 the SPA has already rendered the desired tab; nothing else to do.
             if url_suffix == _BOOT_SUFFIX:
@@ -96,7 +98,9 @@ class NavigationManager:
             # market's odds.
             await page.wait_for_url(lambda u, _suffix=url_suffix: _suffix in u, timeout=NAVIGATION_TIMEOUT_MS)
             await page.wait_for_timeout(DYNAMIC_CONTENT_WAIT_MS)
-            await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
+            await page.wait_for_selector(
+                OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS, state="attached"
+            )
             return True
         except Exception as e:
             self.logger.error("URL-suffix navigation failed for %r: %s", market_tab_name, e)
