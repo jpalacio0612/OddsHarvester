@@ -62,7 +62,12 @@ class NavigationManager:
             # changed).
             boot_url = URLBuilder.build_match_url_with_market(page.url, _BOOT_SUFFIX)
             await page.goto(boot_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-            await page.reload(wait_until="networkidle", timeout=NAVIGATION_TIMEOUT_MS)
+            # Ads / trackers make ``networkidle`` unreliable here; ``domcontentloaded`` plus an
+            # explicit wait for the bookmaker row selector is both faster and more deterministic.
+            await page.reload(wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            # A fresh match page can re-show the consent banner after reload; dismissing it before
+            # waiting for rows avoids the banner masking click targets / slowing lazy-load.
+            await self.browser_helper.dismiss_cookie_banner(page=page)
             await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
 
             # For 1X2 the SPA has already rendered the desired tab; nothing else to do.
