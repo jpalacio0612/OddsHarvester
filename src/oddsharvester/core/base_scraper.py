@@ -458,7 +458,10 @@ class BaseScraper:
 
         try:
             # Navigate to the match page with extended timeout
-            await page.goto(match_link, timeout=NAVIGATION_TIMEOUT_MS, wait_until="domcontentloaded")
+            resp = await page.goto(match_link, timeout=NAVIGATION_TIMEOUT_MS, wait_until="domcontentloaded")
+            resp_status = resp.status if resp else "no-response"
+            body_len = len(await page.content())
+            self.logger.info(f"match goto status={resp_status} body_bytes={body_len} url={page.url}")
 
             # Wait a bit for dynamic content to load
             await page.wait_for_timeout(DYNAMIC_CONTENT_WAIT_MS)
