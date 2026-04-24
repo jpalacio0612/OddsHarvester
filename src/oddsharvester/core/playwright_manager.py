@@ -61,11 +61,18 @@ class PlaywrightManager:
             # Use provided user_agent or random default
             effective_user_agent = user_agent or random.choice(DEFAULT_USER_AGENTS)  # noqa: S311
 
+            # OddsPortal's edge (Varnish/Cloudflare-like) started returning 503 to any request
+            # that advertises a browser-class User-Agent coming from AWS IP ranges. It still
+            # happily serves requests whose HTTP UA looks non-browser (e.g. "curl/7.88.1").
+            # We set the HTTP header via ``extra_http_headers`` (overrides the context UA for
+            # the wire) while leaving ``user_agent`` as a real browser string so ``navigator.userAgent``
+            # stays consistent with the SPA's client-side expectations and the page JS renders.
             self.context = await self.browser.new_context(
                 locale=locale,
                 timezone_id=timezone_id,
                 user_agent=effective_user_agent,
                 viewport={"width": random.randint(1366, 1920), "height": random.randint(768, 1080)},  # noqa: S311
+                extra_http_headers={"User-Agent": "curl/7.88.1"},
             )
 
             # Add anti-detection script
