@@ -3,7 +3,15 @@ import logging
 from playwright.async_api import Page
 
 from oddsharvester.core.browser_helper import BrowserHelper
-from oddsharvester.utils.constants import DEFAULT_MARKET_TIMEOUT_MS, MARKET_SWITCH_WAIT_TIME_MS, SCROLL_PAUSE_TIME_MS
+from oddsharvester.core.odds_portal_selectors import OddsPortalSelectors
+from oddsharvester.core.url_builder import URLBuilder
+from oddsharvester.utils.constants import (
+    DEFAULT_MARKET_TIMEOUT_MS,
+    MARKET_SWITCH_WAIT_TIME_MS,
+    NAVIGATION_TIMEOUT_MS,
+    SCROLL_PAUSE_TIME_MS,
+    SELECTOR_TIMEOUT_MS,
+)
 
 
 class NavigationManager:
@@ -14,11 +22,41 @@ class NavigationManager:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.browser_helper = browser_helper
 
-    async def navigate_to_market_tab(self, page: Page, market_tab_name: str) -> bool:
-        """Navigate to a specific market tab."""
-        return await self.browser_helper.navigate_to_market_tab(
-            page=page, market_tab_name=market_tab_name, timeout=DEFAULT_MARKET_TIMEOUT_MS
-        )
+    async def navigate_to_market_tab(
+        self,
+        page: Page,
+        market_tab_name: str,
+        specific_market: str | None = None,
+    ) -> bool:
+        """Navigate to a market tab via OddsPortal URL-hash suffix routing.
+
+        Replaces the legacy click-based tab navigation which was flaky on EU-region
+        OddsPortal DOM. When the (main, specific) pair is registered in the URL-suffix
+        mapping, we ``page.goto`` the match URL with the suffix appended so the SPA
+        router renders the correct tab (and, for Over/Under, the specific line).
+        Falls back to the legacy click-based helper when the pair is not mapped.
+        """
+        url_suffix = URLBuilder.get_market_url_suffix(market_tab_name, specific_market)
+
+        if url_suffix is None:
+            self.logger.debug(
+                "Market not registered for URL-suffix nav (main=%r specific=%r); falling back to click-based nav",
+                market_tab_name,
+                specific_market,
+            )
+            return await self.browser_helper.navigate_to_market_tab(
+                page=page, market_tab_name=market_tab_name, timeout=DEFAULT_MARKET_TIMEOUT_MS
+            )
+
+        full_url = URLBuilder.build_match_url_with_market(page.url, url_suffix)
+        self.logger.info("Navigating via URL-suffix to %s: %s", market_tab_name, full_url)
+        try:
+            await page.goto(full_url, wait_until="networkidle", timeout=NAVIGATION_TIMEOUT_MS)
+            await page.wait_for_selector(OddsPortalSelectors.BOOKMAKER_ROW_CSS, timeout=SELECTOR_TIMEOUT_MS)
+            return True
+        except Exception as e:
+            self.logger.error("URL-suffix navigation failed for %r: %s", market_tab_name, e)
+            return False
 
     async def wait_for_market_switch(self, page: Page, market_name: str, max_attempts: int = 3) -> bool:
         """

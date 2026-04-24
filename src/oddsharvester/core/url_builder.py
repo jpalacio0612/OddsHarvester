@@ -6,6 +6,17 @@ from oddsharvester.utils.league_aliases import get_league_slug_for_season
 from oddsharvester.utils.sport_league_constants import SPORTS_LEAGUES_URLS_MAPPING
 from oddsharvester.utils.sport_market_constants import Sport
 
+# Maps (main_market, specific_market) to the OddsPortal SPA hash-suffix used for
+# direct URL navigation (bypasses flaky click-based tab selection). Keyed on the
+# market names passed to extract_market_odds (e.g. main="1X2", specific=None or
+# main="Over/Under", specific="Over/Under +2.5"). Limited scope on purpose —
+# extend when another market proves click-nav unreliable.
+_MARKET_URL_SUFFIX_MAPPING: dict[tuple[str, str | None], str] = {
+    ("1X2", None): "1X2;2",
+    ("Both Teams to Score", None): "BTTS;2",
+    ("Over/Under", "Over/Under +2.5"): "Over/Under;2;2.5;0",
+}
+
 
 class URLBuilder:
     """
@@ -112,3 +123,25 @@ class URLBuilder:
             raise ValueError(f"Invalid league '{league}' for sport '{sport}'. Available: {', '.join(leagues.keys())}")
 
         return leagues[league]
+
+    @staticmethod
+    def get_market_url_suffix(main_market: str, specific_market: str | None = None) -> str | None:
+        """Return the OddsPortal URL-hash suffix for a (main_market, specific_market) pair.
+
+        Returns None when the combination is not registered in ``_MARKET_URL_SUFFIX_MAPPING``,
+        which callers can treat as "fall through to legacy click-based navigation".
+        """
+        return _MARKET_URL_SUFFIX_MAPPING.get((main_market, specific_market))
+
+    @staticmethod
+    def build_match_url_with_market(match_url: str, market_suffix: str) -> str:
+        """Return ``match_url`` with the OddsPortal market hash-suffix applied.
+
+        OddsPortal uses a SPA hash router of the form ``#<match_hash>[:<market>;<pos>[;<line>;<side>]]``.
+        This helper preserves the match hash and replaces any prior market suffix.
+        """
+        if "#" not in match_url:
+            return f"{match_url}#{market_suffix}"
+        base, hash_part = match_url.split("#", 1)
+        match_hash = hash_part.split(":", 1)[0]
+        return f"{base}#{match_hash}:{market_suffix}"

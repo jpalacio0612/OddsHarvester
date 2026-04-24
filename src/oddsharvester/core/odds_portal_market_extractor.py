@@ -13,6 +13,7 @@ from oddsharvester.core.market_extraction import (
 )
 from oddsharvester.core.sport_market_registry import SportMarketRegistry
 from oddsharvester.core.sport_period_registry import SportPeriodRegistry
+from oddsharvester.core.url_builder import URLBuilder
 
 
 class OddsPortalMarketExtractor:
@@ -168,9 +169,16 @@ class OddsPortalMarketExtractor:
             f"preview_mode: {preview_submarkets_only}"
         )
 
+        # When the (main, specific) pair is registered for URL-hash navigation, the URL itself already
+        # selects the correct sub-market line, so the click-based sub-market selection below must be
+        # skipped to avoid a spurious error after the SPA has already rendered the right tab.
+        url_based_nav = URLBuilder.get_market_url_suffix(main_market, specific_market) is not None
+
         try:
             # Navigate to the main market tab
-            if not await self.navigation_manager.navigate_to_market_tab(page=page, market_tab_name=main_market):
+            if not await self.navigation_manager.navigate_to_market_tab(
+                page=page, market_tab_name=main_market, specific_market=specific_market
+            ):
                 self.logger.error(f"Failed to find or click {main_market} tab")
                 return []
 
@@ -196,8 +204,12 @@ class OddsPortalMarketExtractor:
                 # If no data was extracted passively, fall back to normal scraping
                 if not odds_data:
                     self.logger.info(f"No data extracted passively for {main_market}, falling back to normal scraping")
-                    if specific_market and not await self.navigation_manager.select_specific_market(
-                        page=page, specific_market=specific_market
+                    if (
+                        specific_market
+                        and not url_based_nav
+                        and not await self.navigation_manager.select_specific_market(
+                            page=page, specific_market=specific_market
+                        )
                     ):
                         self.logger.error(f"Failed to find or select {specific_market} within {main_market}")
                         return []
@@ -212,9 +224,14 @@ class OddsPortalMarketExtractor:
                         target_bookmaker=target_bookmaker,
                     )
             else:
-                # Active mode: click on specific submarket if provided
-                if specific_market and not await self.navigation_manager.select_specific_market(
-                    page=page, specific_market=specific_market
+                # Active mode: click on specific submarket if provided (skipped when the URL-hash
+                # already selected it — see ``url_based_nav`` above).
+                if (
+                    specific_market
+                    and not url_based_nav
+                    and not await self.navigation_manager.select_specific_market(
+                        page=page, specific_market=specific_market
+                    )
                 ):
                     self.logger.error(f"Failed to find or select {specific_market} within {main_market}")
                     return []
@@ -246,8 +263,9 @@ class OddsPortalMarketExtractor:
 
                         odds_entry["odds_history_data"] = all_histories
 
-            # Close the sub-market after scraping to avoid duplicates
-            if specific_market:
+            # Close the sub-market after scraping to avoid duplicates. Skipped for URL-based nav
+            # because the SPA already encodes the sub-market in the hash and there is nothing to close.
+            if specific_market and not url_based_nav:
                 await self.navigation_manager.close_specific_market(page, specific_market)
 
             return odds_data

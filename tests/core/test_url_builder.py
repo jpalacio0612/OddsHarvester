@@ -322,3 +322,59 @@ def test_get_league_url_invalid_league():
         match=r"Invalid league 'random-league' for sport 'football'\. Available: england-premier-league, la-liga",
     ):
         URLBuilder.get_league_url("football", "random-league")
+
+
+@pytest.mark.parametrize(
+    ("main_market", "specific_market", "expected_suffix"),
+    [
+        ("1X2", None, "1X2;2"),
+        ("Both Teams to Score", None, "BTTS;2"),
+        ("Over/Under", "Over/Under +2.5", "Over/Under;2;2.5;0"),
+    ],
+)
+def test_get_market_url_suffix_supported(main_market, specific_market, expected_suffix):
+    """Markets in the URL-suffix mapping return the correct hash-suffix."""
+    assert URLBuilder.get_market_url_suffix(main_market, specific_market) == expected_suffix
+
+
+@pytest.mark.parametrize(
+    ("main_market", "specific_market"),
+    [
+        ("Double Chance", None),
+        ("Draw No Bet", None),
+        ("Over/Under", "Over/Under +1.5"),  # line not yet mapped
+        ("Asian Handicap", "Asian Handicap -0.5"),
+        ("1X2", "Over/Under +2.5"),  # mismatched pair
+    ],
+)
+def test_get_market_url_suffix_unsupported(main_market, specific_market):
+    """Unregistered market pairs return None so callers can fall back to click-based nav."""
+    assert URLBuilder.get_market_url_suffix(main_market, specific_market) is None
+
+
+@pytest.mark.parametrize(
+    ("match_url", "market_suffix", "expected"),
+    [
+        # URL without any hash — suffix becomes the hash
+        (
+            "https://www.oddsportal.com/football/h2h/arsenal/southampton/",
+            "1X2;2",
+            "https://www.oddsportal.com/football/h2h/arsenal/southampton/#1X2;2",
+        ),
+        # URL with a bare match hash — suffix appended after ':'
+        (
+            "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK",
+            "1X2;2",
+            "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK:1X2;2",
+        ),
+        # URL with an existing market suffix — replaced
+        (
+            "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK:Over/Under;2;2.5;0",
+            "BTTS;2",
+            "https://www.oddsportal.com/football/h2h/arsenal/southampton/#hnqjYTeK:BTTS;2",
+        ),
+    ],
+)
+def test_build_match_url_with_market(match_url, market_suffix, expected):
+    """The builder appends or replaces the market hash-suffix while preserving the match hash."""
+    assert URLBuilder.build_match_url_with_market(match_url, market_suffix) == expected
