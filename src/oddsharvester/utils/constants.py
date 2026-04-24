@@ -5,9 +5,9 @@ ODDSPORTAL_BASE_URL = "https://www.oddsportal.com"
 # =============================================================================
 
 # Navigation & page load timeouts (ms)
-NAVIGATION_TIMEOUT_MS = 15000
-GOTO_TIMEOUT_MS = 10000
-GOTO_TIMEOUT_LONG_MS = 20000
+NAVIGATION_TIMEOUT_MS = 45000
+GOTO_TIMEOUT_MS = 45000
+GOTO_TIMEOUT_LONG_MS = 60000
 SELECTOR_TIMEOUT_MS = 10000
 COOKIE_BANNER_TIMEOUT_MS = 10000
 MARKET_TAB_TIMEOUT_MS = 10000
