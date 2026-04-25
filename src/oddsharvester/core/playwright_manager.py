@@ -22,10 +22,10 @@ DEFAULT_USER_AGENTS = [
 ]
 
 
-# Resource types we never need for odds extraction. Stylesheet is *kept* on purpose —
-# OddsPortal's SPA reads computed styles to decide when to mount the odds table, and
-# blocking stylesheets caused every match to come back with 0 bookmaker rows.
-_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+# Resource types we never need for odds extraction. ``font`` and ``media`` were proven
+# safe to drop in tests; ``image`` and ``stylesheet`` had to be kept because aborting them
+# breaks the SPA's readiness checks and produces 0 bookmaker rows.
+_BLOCKED_RESOURCE_TYPES = frozenset({"font", "media"})
 
 # Hostnames whose requests are pure ads / analytics / consent banners.
 _BLOCKED_HOST_KEYWORDS = (
