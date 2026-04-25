@@ -198,6 +198,22 @@ def _upload_to_s3(bucket: str, prefix: str, sport: str, league: str, season: str
     return f"s3://{bucket}/{key}"
 
 
+def _parse_proxy_url(proxy_url: str) -> dict[str, str]:
+    """Parse a ``http://user:pass@host:port`` URL into Playwright's proxy dict."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(proxy_url)
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    out = {"server": server}
+    if parsed.username:
+        out["username"] = parsed.username
+    if parsed.password:
+        out["password"] = parsed.password
+    return out
+
+
 async def run(
     sport: str,
     league: str,
@@ -205,13 +221,19 @@ async def run(
     out: Path | None,
     s3_bucket: str | None,
     s3_prefix: str,
+    proxy_url: str | None = None,
 ) -> int:
     base_url = URLBuilder.get_historic_matches_url(sport=sport, league=league, season=season)
     logger.info("base results URL: %s", base_url)
+    if proxy_url:
+        logger.info("using proxy: %s", proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url)
     started = time.time()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+        launch_kwargs: dict = {"headless": True, "args": ["--no-sandbox"]}
+        if proxy_url:
+            launch_kwargs["proxy"] = _parse_proxy_url(proxy_url)
+        browser = await pw.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             viewport={"width": 1600, "height": 1100},
             extra_http_headers=UA_HEADERS,
@@ -269,6 +291,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="_bootstrap/oddsportal",
         help="prefix under --s3-bucket (default: _bootstrap/oddsportal)",
     )
+    parser.add_argument(
+        "--proxy-url",
+        default=None,
+        help="route Playwright through this HTTP(S) proxy (e.g. http://USER:PASS@geo.iproyal.com:12321)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -279,7 +306,9 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s %(message)s",
     )
-    count = asyncio.run(run(args.sport, args.league, args.season, args.out, args.s3_bucket, args.s3_prefix))
+    count = asyncio.run(
+        run(args.sport, args.league, args.season, args.out, args.s3_bucket, args.s3_prefix, args.proxy_url)
+    )
     return 0 if count > 0 else 1
 
 

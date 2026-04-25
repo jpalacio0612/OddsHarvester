@@ -112,6 +112,8 @@ def _build_harvester_cmd(args: argparse.Namespace, chunk: list[str], out_path: P
     ]
     if args.odds_history:
         cmd.append("--odds-history")
+    if args.proxy_url:
+        cmd.extend(["--proxy-url", args.proxy_url])
     for url in chunk:
         cmd.extend(["--match-link", url])
     return cmd
@@ -321,6 +323,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--chunk-size", type=int, default=10)
     parser.add_argument("--odds-history", action="store_true", help="pass --odds-history through (slower)")
+    parser.add_argument(
+        "--proxy-url",
+        default=None,
+        help="forward this URL as oddsharvester --proxy-url (e.g. http://USER:PASS@geo.iproyal.com:12321)",
+    )
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--dry-run", action="store_true", help="print plan + first chunks and exit")
     parser.add_argument("-v", "--verbose", action="store_true")
