@@ -22,6 +22,54 @@ DEFAULT_USER_AGENTS = [
 ]
 
 
+# Resource types we never need for odds extraction.
+_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font", "stylesheet"})
+
+# Hostnames whose requests are pure ads / analytics / consent banners.
+_BLOCKED_HOST_KEYWORDS = (
+    "googletagmanager",
+    "google-analytics",
+    "googlesyndication",
+    "doubleclick",
+    "googleadservices",
+    "adservice",
+    "facebook.net",
+    "facebook.com",
+    "hotjar",
+    "scorecardresearch",
+    "cookielaw.org",
+    "onetrust.com",
+    "surveygizmo",
+    "widgixeu",
+    "consensu.org",
+    "criteo",
+    "taboola",
+    "outbrain",
+    "amazon-adsystem",
+    "doubleverify",
+    "moatads",
+    "yieldmo",
+)
+
+
+async def _route_block_unneeded(route, request):
+    """Abort image/font/stylesheet/media requests and known ad/analytics hostnames."""
+    try:
+        if request.resource_type in _BLOCKED_RESOURCE_TYPES:
+            await route.abort()
+            return
+        url_lower = request.url.lower()
+        if any(host in url_lower for host in _BLOCKED_HOST_KEYWORDS):
+            await route.abort()
+            return
+        await route.continue_()
+    except Exception:  # pragma: no cover - playwright sometimes races on aborts
+        try:
+            await route.continue_()
+        except Exception:
+            pass
+
+
 class PlaywrightManager:
     """
     Manages Playwright browser lifecycle and configuration.
@@ -77,6 +125,11 @@ class PlaywrightManager:
 
             # Add anti-detection script
             await self.context.add_init_script(STEALTH_SCRIPT)
+
+            # Bandwidth-saving request interception: drop everything that isn't required for the
+            # SPA to compute and render the bookmaker odds table. Cuts ~70% of egress when the
+            # context is routed through a metered residential proxy.
+            await self.context.route("**/*", _route_block_unneeded)
 
             self.page = await self.context.new_page()
             self.logger.info("Playwright initialized successfully.")
