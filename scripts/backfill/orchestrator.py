@@ -204,7 +204,22 @@ def _run_one_chunk(
             return
 
         scraped_hashes: set[str] = set()
+        markets_required = [m.strip() for m in args.markets.split(",") if m.strip()]
         for record in records:
+            # Soft failure — OddsHarvester returned a record but every requested market is empty.
+            # Treat as failed (don't pollute S3 with empty JSONs) so the retry pass can pick it up.
+            non_empty_markets = [m for m in markets_required if record.get(f"{m}_market")]
+            if not non_empty_markets:
+                stats.failed_urls.append(record.get("match_link", ""))
+                LOGGER.warning(
+                    "chunk %d/%d EMPTY %s (%s vs %s) — 0 markets, will retry",
+                    chunk_idx,
+                    total_chunks,
+                    record.get("match_link", "?"),
+                    record.get("home_team", "?"),
+                    record.get("away_team", "?"),
+                )
+                continue
             try:
                 match_hash = _upload_match(s3_client, args.bucket, args.prefix, record)
                 scraped_hashes.add(match_hash)
@@ -216,7 +231,7 @@ def _run_one_chunk(
                     match_hash,
                     record.get("home_team", "?"),
                     record.get("away_team", "?"),
-                    sum(1 for k in record if k.endswith("_market") and record.get(k)),
+                    len(non_empty_markets),
                 )
             except Exception as err:
                 stats.failed_urls.append(record.get("match_link", ""))
@@ -304,10 +319,44 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     failed_file = Path(args.log_dir) / f"failed-{args.league}-{args.season}.txt"
-    for idx, chunk in enumerate(chunks, start=1):
-        _run_one_chunk(s3_client, args, chunk, idx, len(chunks), stats)
-        if idx % PROGRESS_LOG_EVERY_CHUNKS == 0:
-            _log_progress(stats, idx, len(chunks))
+
+    # Pass 0 = main, passes 1..N = retries of stats.failed_urls accumulated in the previous pass.
+    pass_urls = pending
+    for pass_idx in range(args.max_retries + 1):
+        label = "main" if pass_idx == 0 else f"retry-{pass_idx}"
+        if not pass_urls:
+            LOGGER.info("%s pass: no URLs to process — skipping", label)
+            break
+        chunks = _split_chunks(pass_urls, args.chunk_size)
+        LOGGER.info("=== %s pass: %d urls, %d chunks ===", label, len(pass_urls), len(chunks))
+
+        # Reset failure list for this pass so it only contains failures *of this pass*.
+        # On entry to retry-N, ``pass_urls`` is the failures of the previous pass.
+        pass_failures_before = list(stats.failed_urls)
+        stats.failed_urls = []
+
+        for idx, chunk in enumerate(chunks, start=1):
+            _run_one_chunk(s3_client, args, chunk, idx, len(chunks), stats)
+            if idx % PROGRESS_LOG_EVERY_CHUNKS == 0:
+                _log_progress(stats, idx, len(chunks))
+
+        retried_failures = list(stats.failed_urls)
+        LOGGER.info(
+            "=== %s pass complete: %d urls processed, %d still failing ===",
+            label,
+            len(pass_urls),
+            len(retried_failures),
+        )
+
+        # Keep the previous-pass failure list intact only on the final pass; intermediate
+        # passes overwrite. The persistent failed.txt is written at the end.
+        if pass_idx == args.max_retries or not retried_failures:
+            stats.failed_urls = retried_failures
+            break
+
+        pass_urls = retried_failures
+        # Brief sleep between passes so any IPRoyal-side rate-limit windows recover.
+        time.sleep(args.retry_cooldown_s)
 
     _append_failed(failed_file, stats.failed_urls)
     total_elapsed = _fmt_duration(time.time() - stats.started_at)
@@ -338,6 +387,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--proxy-url",
         default=None,
         help="forward this URL as oddsharvester --proxy-url (e.g. http://USER:PASS@geo.iproyal.com:12321)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="retry passes for matches that returned 0 markets (default: 2; set 0 to disable)",
+    )
+    parser.add_argument(
+        "--retry-cooldown-s",
+        type=int,
+        default=30,
+        help="seconds to wait between retry passes (default: 30)",
     )
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--dry-run", action="store_true", help="print plan + first chunks and exit")
