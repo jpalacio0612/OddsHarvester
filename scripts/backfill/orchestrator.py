@@ -113,7 +113,18 @@ def _build_harvester_cmd(args: argparse.Namespace, chunk: list[str], out_path: P
     if args.odds_history:
         cmd.append("--odds-history")
     if args.proxy_url:
-        cmd.extend(["--proxy-url", args.proxy_url])
+        # OddsHarvester expects auth via --proxy-user / --proxy-pass and the URL with no creds.
+        from urllib.parse import urlparse
+
+        parsed = urlparse(args.proxy_url)
+        bare_url = f"{parsed.scheme}://{parsed.hostname}"
+        if parsed.port:
+            bare_url += f":{parsed.port}"
+        cmd.extend(["--proxy-url", bare_url])
+        if parsed.username:
+            cmd.extend(["--proxy-user", parsed.username])
+        if parsed.password:
+            cmd.extend(["--proxy-pass", parsed.password])
     for url in chunk:
         cmd.extend(["--match-link", url])
     return cmd
